@@ -1,0 +1,79 @@
+# 主配置。HA 中的 ES5 实体 ID 与下方映射保持一致。
+substitutions:
+  presence_entity: binary_sensor.replace_with_your_es5_occupancy
+  illuminance_entity: sensor.replace_with_your_es5_illuminance
+
+esphome:
+  name: es5-geek
+  friendly_name: ES5 GEEK
+  build_path: /tmp/es5-geek-build
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+preferences:
+  flash_write_interval: 5s
+
+psram:
+  mode: quad
+  speed: 80MHz
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: INFO
+
+api:
+  encryption:
+    key: !secret api_key
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+    encryption:
+      key: !secret api_key
+
+# 家中 Wi-Fi 凭据仅存于已忽略的 secrets.yaml；仍保留 USB 和热点配网。
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # 默认 DHCP；建议在路由器按设备 MAC 保留地址。
+  power_save_mode: NONE
+  reboot_timeout: 0s
+  ap:
+    ssid: ES5-GEEK-Setup
+    password: !secret ap_password
+
+captive_portal:
+improv_serial:
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: false
+  on_ble_advertise:
+    then:
+      - lambda: |-
+          for (const auto &sd : x.get_service_datas()) {
+            if (sd.uuid != esp32_ble_tracker::ESPBTUUID::from_uint16(0xFE95)) continue;
+            if (sd.data.size() < 5 || sd.data[2] != 0x0F || sd.data[3] != 0x6A) continue;
+            id(es5_adverts)++;
+            id(es5_last_ms) = millis();
+            id(es5_last_rssi) = x.get_rssi();
+            id(es5_mac_seen) = x.address_str();
+            id(es5_encrypted) = (sd.data[0] & 0x08) != 0;
+            if (!id(es5_seen) || millis() - id(es5_log_ms) > 30000) {
+              ESP_LOGI("es5_scan", "ES5BB broadcast received: %s RSSI=%d (not decrypted)",
+                       x.address_str().c_str(), x.get_rssi());
+              id(es5_log_ms) = millis();
+            }
+            id(es5_seen) = true;
+          }
+
+bluetooth_proxy:
+  active: false
+
+packages:
+  screen: !include screen.yaml
+  entities: !include entities.yaml

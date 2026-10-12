@@ -1,0 +1,192 @@
+# 自定义界面入口：颜色、字体、坐标与页面都在此文件。
+# LCD 引脚来自微雪官方 ESP32-S3-GEEK 示例。
+spi:
+  clk_pin: GPIO12
+  mosi_pin: GPIO11
+
+output:
+  - platform: ledc
+    pin: GPIO7
+    id: lcd_backlight
+    frequency: 2000Hz
+
+light:
+  - platform: monochromatic
+    output: lcd_backlight
+    id: backlight
+    name: Screen Brightness
+    restore_mode: RESTORE_DEFAULT_ON
+    default_transition_length: 200ms
+
+# 可在 HA 中设置，也可双击 BOOT 循环切换。选项顺序用于持久化，不要随意重排。
+select:
+  - platform: template
+    id: screen_rotation
+    name: Screen Rotation
+    entity_category: config
+    icon: mdi:screen-rotation
+    optimistic: true
+    restore_value: true
+    initial_option: "90° 横屏"
+    options:
+      - "0° 竖屏"
+      - "90° 横屏"
+      - "180° 竖屏反向"
+      - "270° 横屏反向"
+    on_value:
+      then:
+        - lambda: |-
+            const display::DisplayRotation rotations[] = {
+              display::DISPLAY_ROTATION_0_DEGREES,
+              display::DISPLAY_ROTATION_90_DEGREES,
+              display::DISPLAY_ROTATION_180_DEGREES,
+              display::DISPLAY_ROTATION_270_DEGREES
+            };
+            if (i < 4) {
+              id(lcd).set_rotation(rotations[i]);
+              ESP_LOGI("screen", "Rotation=%d size=%dx%d", (int) rotations[i],
+                       id(lcd).get_width(), id(lcd).get_height());
+            }
+            // 启动恢复时显示器可能尚未初始化，交给下一次定时刷新绘制。
+
+font:
+  - file: fonts/ui.otf
+    id: small_font
+    size: 13
+    glyphs: ' !"%()+,-./0123456789:;=?ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz人无有等待读取状态未知网络离线在光照电量时钟同步短按切页长息屏配连接传感器双击旋转'
+  - file: fonts/ui.otf
+    id: title_font
+    size: 28
+    glyphs: ' HA有人无等待接入离线未知状态已收广播'
+  - file: fonts/ui.otf
+    id: clock_font
+    size: 36
+    glyphs: ' -0123456789:'
+
+display:
+  - platform: mipi_spi
+    model: WAVESHARE-ESP32-S3-GEEK
+    id: lcd
+    cs_pin: GPIO10
+    dc_pin: GPIO8
+    reset_pin: GPIO9
+    dimensions:
+      width: 135
+      height: 240
+      offset_width: 52
+      offset_height: 40
+    rotation: 90
+    invert_colors: true
+    color_order: RGB
+    data_rate: 20MHz
+    update_interval: 1s
+    lambda: |-
+      // 横屏 240x135，竖屏 135x240；运行时按实际尺寸选择布局。
+      const Color bg(12, 18, 29), panel(22, 33, 49), white(234, 242, 250);
+      const Color muted(133, 152, 175), green(67, 219, 156), amber(255, 193, 92);
+      const bool wifi = id(wifi_rssi).has_state() && !isnan(id(wifi_rssi).state)
+                        && wifi::global_wifi_component->is_connected();
+      const bool ha = wifi && id(ha_ready);
+      const auto state = id(es5_presence).state;
+      const bool valid = ha && (state == "on" || state == "off");
+      it.fill(bg);
+      if (it.get_width() < it.get_height()) {
+        const int cx = it.get_width() / 2;
+        it.print(cx, 7, id(small_font), white, TextAlign::TOP_CENTER, "ES5 / GEEK");
+        it.filled_circle(20, 36, 3, wifi ? green : amber);
+        it.print(28, 28, id(small_font), muted, "WiFi");
+        it.filled_circle(83, 36, 3, ha ? green : amber);
+        it.print(91, 28, id(small_font), muted, "HA");
+        it.filled_rectangle(8, 50, it.get_width() - 16, 1, panel);
+        if (id(page_index) == 0) {
+          it.print(cx, 59, id(title_font), id(es5_seen) ? green : amber,
+                   TextAlign::TOP_CENTER, id(es5_seen) ? "已收广播" : "等待广播");
+          if (id(es5_seen)) {
+            it.print(cx, 105, id(small_font), white, TextAlign::TOP_CENTER,
+                     id(es5_mac_seen).substr(0, 8).c_str());
+            it.print(cx, 124, id(small_font), white, TextAlign::TOP_CENTER,
+                     id(es5_mac_seen).substr(9).c_str());
+            it.printf(cx, 146, id(small_font), muted, TextAlign::TOP_CENTER,
+                      "%d dBm  RX %u", id(es5_last_rssi), (unsigned) id(es5_adverts));
+            it.printf(cx, 165, id(small_font), muted, TextAlign::TOP_CENTER, "%us ago",
+                      (unsigned) ((millis() - id(es5_last_ms)) / 1000));
+          } else it.print(cx, 115, id(small_font), muted, TextAlign::TOP_CENTER, "ES5BB / BLE");
+        } else if (id(page_index) == 1) {
+          const char *label = !wifi ? "等待接入" : !ha ? "HA 离线" :
+                              !valid ? "等待状态" : state == "on" ? "有人" : "无人";
+          it.print(cx, 65, id(title_font), valid ? green : amber, TextAlign::TOP_CENTER, label);
+          it.print(cx, 115, id(small_font), muted, TextAlign::TOP_CENTER, "光照");
+          if (valid && id(es5_lux).has_state() && !isnan(id(es5_lux).state))
+            it.printf(cx, 137, id(small_font), white, TextAlign::TOP_CENTER, "%.0f lx", id(es5_lux).state);
+          else it.print(cx, 137, id(small_font), white, TextAlign::TOP_CENTER, "-- lx");
+          if (id(es5_seen) && millis() - id(es5_last_ms) < 120000)
+            it.printf(cx, 167, id(small_font), muted, TextAlign::TOP_CENTER, "%d dBm", id(es5_last_rssi));
+        } else if (id(page_index) == 2) {
+          it.print(cx, 65, id(small_font), muted, TextAlign::TOP_CENTER, wifi ? "网络在线" : "等待配网");
+          it.print(cx, 95, id(small_font), white, TextAlign::TOP_CENTER,
+                   wifi ? id(device_ip).state.c_str() : "ES5-GEEK-Setup");
+          if (wifi) it.printf(cx, 121, id(small_font), muted, TextAlign::TOP_CENTER, "%.0f dBm", id(wifi_rssi).state);
+          it.print(cx, 148, id(small_font), muted, TextAlign::TOP_CENTER, ha ? "HA 在线" : "HA 未连接");
+          it.printf(cx, 173, id(small_font), muted, TextAlign::TOP_CENTER, "Rotation %d", (int) it.get_rotation());
+        } else {
+          auto now = id(ha_time).now();
+          if (now.is_valid()) {
+            it.strftime(cx, 79, id(clock_font), white, TextAlign::TOP_CENTER, "%H:%M", now);
+            it.strftime(cx, 139, id(small_font), muted, TextAlign::TOP_CENTER, "%Y-%m-%d", now);
+          } else {
+            it.print(cx, 79, id(clock_font), white, TextAlign::TOP_CENTER, "--:--");
+            it.print(cx, 139, id(small_font), muted, TextAlign::TOP_CENTER, "时钟未同步");
+          }
+        }
+        it.print(cx, 198, id(small_font), muted, TextAlign::TOP_CENTER, "短按切页 双击旋转");
+        for (int i = 0; i < 4; i++) it.filled_circle(cx - 15 + i * 10, 229, 2, i == id(page_index) ? green : panel);
+        return;
+      }
+      it.print(10, 5, id(small_font), white, "ES5 / GEEK");
+      it.filled_circle(163, 13, 3, wifi ? green : amber);
+      it.print(170, 5, id(small_font), muted, "WiFi");
+      it.filled_circle(207, 13, 3, ha ? green : amber);
+      it.print(214, 5, id(small_font), muted, "HA");
+      it.filled_rectangle(10, 28, 220, 1, panel);
+      if (id(page_index) == 0) {
+        it.print(14, 34, id(title_font), id(es5_seen) ? green : amber,
+                 id(es5_seen) ? "已收广播" : "等待广播");
+        if (id(es5_seen)) {
+          it.print(14, 73, id(small_font), white, id(es5_mac_seen).c_str());
+          it.printf(14, 92, id(small_font), muted, "%d dBm  RX %u", id(es5_last_rssi), (unsigned) id(es5_adverts));
+          it.printf(14, 110, id(small_font), muted, "%s  %us ago", id(es5_encrypted) ? "Encrypted" : "Plain",
+                    (unsigned) ((millis() - id(es5_last_ms)) / 1000));
+        } else {
+          it.print(14, 77, id(small_font), muted, "ES5BB / BLE");
+          it.print(14, 100, id(small_font), muted, "短按切页  双击旋转");
+        }
+      } else if (id(page_index) == 1) {
+        const char *label = !wifi ? "等待接入" : !ha ? "HA 离线" :
+                            !valid ? "等待状态" : state == "on" ? "有人" : "无人";
+        it.print(14, 37, id(title_font), valid ? green : amber, label);
+        it.print(14, 78, id(small_font), muted, "光照");
+        if (valid && id(es5_lux).has_state() && !isnan(id(es5_lux).state))
+          it.printf(48, 78, id(small_font), white, "%.0f lx", id(es5_lux).state);
+        else it.print(48, 78, id(small_font), white, "-- lx");
+        if (id(es5_seen) && millis() - id(es5_last_ms) < 120000)
+          it.printf(132, 78, id(small_font), muted, "%d dBm", id(es5_last_rssi));
+        else it.print(132, 78, id(small_font), muted, "-- dBm");
+        it.print(14, 100, id(small_font), muted, "短按切页  双击旋转");
+      } else if (id(page_index) == 2) {
+        it.print(14, 36, id(small_font), muted, wifi ? "网络在线" : "等待配网");
+        it.print(14, 59, id(small_font), white,
+                 wifi ? id(device_ip).state.c_str() : "ES5-GEEK-Setup");
+        if (wifi) it.printf(14, 81, id(small_font), muted, "%.0f dBm  ES5 BLE %u", id(wifi_rssi).state, (unsigned) id(es5_adverts));
+        else it.print(14, 81, id(small_font), muted, "USB / Improv");
+        it.print(14, 101, id(small_font), muted, ha ? "HA 在线" : "HA 未连接");
+      } else {
+        auto now = id(ha_time).now();
+        if (now.is_valid()) {
+          it.strftime(120, 37, id(clock_font), white, TextAlign::TOP_CENTER, "%H:%M", now);
+          it.strftime(120, 88, id(small_font), muted, TextAlign::TOP_CENTER, "%Y-%m-%d", now);
+        } else {
+          it.print(120, 43, id(clock_font), white, TextAlign::TOP_CENTER, "--:--");
+          it.print(120, 92, id(small_font), muted, TextAlign::TOP_CENTER, "时钟未同步");
+        }
+      }
+      for (int i = 0; i < 4; i++) it.filled_circle(105 + i * 10, 127, 2, i == id(page_index) ? green : panel);

@@ -1,0 +1,128 @@
+globals:
+  - id: es5_last_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: es5_last_rssi
+    type: int
+    initial_value: '-127'
+  - id: es5_mac_seen
+    type: std::string
+    initial_value: '""'
+  - id: es5_encrypted
+    type: bool
+    initial_value: 'false'
+  - id: es5_adverts
+    type: uint32_t
+    initial_value: '0'
+  - id: es5_log_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: es5_seen
+    type: bool
+    initial_value: 'false'
+  - id: ha_ready
+    type: bool
+    initial_value: 'false'
+  - id: page_index
+    type: int
+    initial_value: '1'
+
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            api.connected:
+              state_subscription_only: true
+          then:
+            - lambda: id(ha_ready) = true;
+          else:
+            - lambda: |-
+                id(ha_ready) = false;
+                id(es5_presence).publish_state("unavailable");
+
+text_sensor:
+  - platform: homeassistant
+    id: es5_presence
+    entity_id: ${presence_entity}
+    internal: true
+    on_value:
+      then:
+        - lambda: ESP_LOGI("es5_state", "HA occupancy state received=%s", x.c_str());
+  - platform: wifi_info
+    ip_address:
+      id: device_ip
+      name: IP Address
+    ssid:
+      id: wifi_name
+      name: WiFi SSID
+
+sensor:
+  - platform: template
+    name: ES5 BLE Packets
+    id: es5_packet_counter
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: return id(es5_adverts);
+  - platform: homeassistant
+    id: es5_lux
+    entity_id: ${illuminance_entity}
+    internal: true
+  - platform: wifi_signal
+    id: wifi_rssi
+    name: WiFi Signal
+    update_interval: 30s
+  - platform: uptime
+    id: running_time
+    name: Uptime
+    update_interval: 30s
+
+time:
+  - platform: homeassistant
+    id: ha_time
+    timezone: Asia/Shanghai
+
+binary_sensor:
+  - platform: gpio
+    id: boot_button
+    internal: true
+    pin:
+      number: GPIO0
+      ignore_strapping_warning: true
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on: 20ms
+    on_multi_click:
+      - timing:
+          - ON for 40ms to 600ms
+          - OFF for 40ms to 300ms
+          - ON for 40ms to 600ms
+          - OFF for at least 350ms
+        then:
+          - select.next:
+              id: screen_rotation
+              cycle: true
+      - timing:
+          - ON for 40ms to 600ms
+          - OFF for at least 350ms
+        then:
+          - lambda: id(page_index) = (id(page_index) + 1) % 4;
+          - component.update: lcd
+      - timing:
+          - ON for at least 1s
+        then:
+          - light.toggle: backlight
+
+button:
+  - platform: restart
+    name: Restart
+    entity_category: diagnostic
+  - platform: template
+    name: Next Screen
+    on_press:
+      - lambda: id(page_index) = (id(page_index) + 1) % 4;
+      - component.update: lcd
